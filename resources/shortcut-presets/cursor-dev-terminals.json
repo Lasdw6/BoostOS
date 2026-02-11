@@ -1,0 +1,25 @@
+{
+  "id": "cursor-dev-terminals",
+  "name": "Cursor Dev Terminals",
+  "description": "Open Cursor at C:\\Desktop\\Boost\\Boost and start bun run dev, claude, and codex in separate integrated terminals.",
+  "defaultShortcut": "CommandOrControl+Shift+D",
+  "action": {
+    "type": "cursor_tasks",
+    "workspacePath": "C:\\Desktop\\Boost\\Boost",
+    "editorCommand": "cursor",
+    "terminals": [
+      {
+        "label": "bun run dev",
+        "command": "bun run dev"
+      },
+      {
+        "label": "claude",
+        "command": "claude"
+      },
+      {
+        "label": "codex",
+        "command": "codex"
+      }
+    ]
+  }
+}
