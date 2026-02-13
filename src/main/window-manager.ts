@@ -172,6 +172,13 @@ export class DesktopWindowManager {
 
   focusWindow(window: any): void {
     if (!window) throw new Error('Window is null or undefined')
+    try {
+      const minimized =
+        typeof window.isMinimized === 'function' ? Boolean(window.isMinimized()) : false
+      if (minimized && typeof window.restore === 'function') window.restore()
+    } catch {
+      // Ignore restore errors and still attempt to bring to top.
+    }
     window.bringToTop()
   }
 
@@ -252,6 +259,19 @@ export class DesktopWindowManager {
   getAllWindows(): any[] {
     // Return raw Window objects with all methods (getBounds, getTitle, etc.)
     return this.getWindows()
+  }
+
+  getActiveWindow(): any | null {
+    const wm = getWindowManager()
+    if (!wm) return null
+    try {
+      if (typeof wm.getActiveWindow === 'function') {
+        return wm.getActiveWindow()
+      }
+    } catch (error) {
+      console.error('[WindowManager] Failed to get active window:', error)
+    }
+    return null
   }
 
   getWindowById(id: number): any | null {

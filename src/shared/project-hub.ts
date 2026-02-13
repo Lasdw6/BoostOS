@@ -12,6 +12,42 @@ export interface ProjectProfile {
   updated_at: string
 }
 
+export type RuntimeSurface = 'ide' | 'terminal' | 'browser'
+export type RuntimeFeedbackScope = 'pid' | 'window' | 'port'
+
+export interface RuntimeFeedbackStore {
+  pid: Partial<Record<RuntimeSurface, Record<string, string>>>
+  window: Partial<Record<RuntimeSurface, Record<string, string>>>
+  port: Partial<Record<RuntimeSurface, Record<string, string>>>
+  updated_at: string | null
+}
+
+export type SessionBindingType = 'agent' | 'devserver'
+
+export interface SessionBinding {
+  id: string
+  project_id: string
+  type: SessionBindingType
+  label?: string
+  integrated_terminal?: boolean
+  integrated_terminal_index?: number
+  pid?: number
+  window_id?: number
+  cwd_hint?: string
+  cmd_hint?: string
+  port_hint?: number
+  created_at: string
+  updated_at: string
+  last_seen_at: string | null
+}
+
+export interface SessionDefaultsByProject {
+  [projectId: string]: {
+    agent?: string
+    devserver?: string
+  }
+}
+
 export interface ProjectHubConfig {
   active_project_id: string | null
   projects: ProjectProfile[]
@@ -20,7 +56,18 @@ export interface ProjectHubConfig {
     open_ide: string
     open_browser: string
     open_agent: string
+    cycle_agent: string
   }
+  runtime_feedback: RuntimeFeedbackStore
+  session_bindings: SessionBinding[]
+  session_defaults_by_project: SessionDefaultsByProject
+}
+
+export const DEFAULT_RUNTIME_FEEDBACK: RuntimeFeedbackStore = {
+  pid: {},
+  window: {},
+  port: {},
+  updated_at: null
 }
 
 export const DEFAULT_PROJECT_HUB_CONFIG: ProjectHubConfig = {
@@ -30,6 +77,10 @@ export const DEFAULT_PROJECT_HUB_CONFIG: ProjectHubConfig = {
     switcher: 'CommandOrControl+Shift+S',
     open_ide: 'CommandOrControl+Shift+I',
     open_browser: 'CommandOrControl+Shift+B',
-    open_agent: 'CommandOrControl+Shift+A'
-  }
+    open_agent: 'CommandOrControl+Shift+A',
+    cycle_agent: 'CommandOrControl+Tab'
+  },
+  runtime_feedback: DEFAULT_RUNTIME_FEEDBACK,
+  session_bindings: [],
+  session_defaults_by_project: {}
 }

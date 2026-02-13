@@ -65,6 +65,7 @@ function detectTerminalContext(): {
   shell: string
   termProgram?: string
   parentProcess?: string
+  currentPid?: string
   executeInCaller: boolean
 } {
   const termProgram = process.env.TERM_PROGRAM || ''
@@ -97,6 +98,7 @@ function detectTerminalContext(): {
     shell,
     termProgram: termProgram || undefined,
     parentProcess: process.ppid > 0 ? String(process.ppid) : undefined,
+    currentPid: process.pid > 0 ? String(process.pid) : undefined,
     executeInCaller: true
   }
 }
