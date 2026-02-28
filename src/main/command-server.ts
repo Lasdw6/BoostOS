@@ -14,6 +14,8 @@ type ExecutePayload = {
     parentProcess?: string
     executeInCaller?: boolean
     currentPid?: string
+    terminalSessionId?: string
+    terminalSessionTag?: string
   }
 }
 

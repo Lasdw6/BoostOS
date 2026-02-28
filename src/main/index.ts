@@ -535,6 +535,47 @@ async function focusIntegratedTerminalIndex(index: number): Promise<boolean> {
   })
 }
 
+async function focusIntegratedTerminalBySessionTag(tag: string): Promise<boolean> {
+  const normalizedTag = String(tag || '').trim()
+  if (!normalizedTag) return false
+  const escapedTag = normalizedTag.replace(/'/g, "''")
+  const psScript = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Start-Sleep -Milliseconds 120',
+    "[System.Windows.Forms.SendKeys]::SendWait('^+p')",
+    'Start-Sleep -Milliseconds 120',
+    "[System.Windows.Forms.SendKeys]::SendWait('>workbench.action.quickOpenTerm')",
+    'Start-Sleep -Milliseconds 80',
+    "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
+    'Start-Sleep -Milliseconds 140',
+    `$tag='${escapedTag}'`,
+    '[System.Windows.Forms.SendKeys]::SendWait($tag)',
+    'Start-Sleep -Milliseconds 80',
+    "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"
+  ].join('; ')
+
+  return await new Promise<boolean>((resolve) => {
+    const proc = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript],
+      { windowsHide: true }
+    )
+    proc.on('exit', (code) => resolve(code === 0))
+    proc.on('error', () => resolve(false))
+  })
+}
+
+async function applyIntegratedTerminalSelection(binding: SessionBinding): Promise<void> {
+  const tag = (binding.terminal_session_tag || '').trim()
+  if (tag) {
+    const byTag = await focusIntegratedTerminalBySessionTag(tag)
+    if (byTag) return
+  }
+  if (binding.integrated_terminal_index) {
+    void focusIntegratedTerminalIndex(binding.integrated_terminal_index)
+  }
+}
+
 function bindingMatchesAgent(binding: SessionBinding, agent: SessionBinding): boolean {
   const a = (agent.label || '').trim().toLowerCase()
   const b = (binding.label || '').trim().toLowerCase()
@@ -636,6 +677,8 @@ async function executeCommandServerInput(
     parentProcess?: string
     executeInCaller?: boolean
     currentPid?: string
+    terminalSessionId?: string
+    terminalSessionTag?: string
   },
   resolution?: { picker?: string; selectedId?: string }
 ): Promise<ExecuteResult> {
@@ -741,6 +784,14 @@ async function executeCommandServerInput(
     const finalPortHint = explicitPortHint || portHint
     const integratedIndexHint =
       binding.integrated && Number.isFinite(flags.index) && Number(flags.index) > 0 ? Math.floor(Number(flags.index)) : undefined
+    const terminalSessionId =
+      binding.integrated && terminalContext?.terminalSessionId?.trim()
+        ? terminalContext.terminalSessionId.trim()
+        : undefined
+    const terminalSessionTag =
+      binding.integrated && terminalContext?.terminalSessionTag?.trim()
+        ? terminalContext.terminalSessionTag.trim()
+        : undefined
 
     const id = randomUUID()
     const upserted = upsertSessionBinding(config, {
@@ -750,19 +801,25 @@ async function executeCommandServerInput(
       label: flags.label?.trim() || undefined,
       integrated_terminal: binding.integrated,
       integrated_terminal_index: integratedIndexHint,
+      terminal_session_id: terminalSessionId,
+      terminal_session_tag: terminalSessionTag,
       pid: bindingPid,
       window_id: bindingWindowId,
       cwd_hint: cwdHint || undefined,
       cmd_hint: cmdHint || undefined,
       port_hint: finalPortHint
     })
-    config = upserted.config
+    config = setDefaultSessionBinding(upserted.config, {
+      project_id: chosenProject.id,
+      type,
+      binding_id: upserted.binding.id
+    })
 
     setConfig(config)
     return {
       ok: true,
       command: `add-${type}`,
-      message: `Added ${type} session for ${chosenProject.name}${upserted.binding.id ? ` (${upserted.binding.id.slice(0, 8)})` : ''}.${binding.integrated ? ' Integrated terminal detected.' : ''}${binding.integrated && !integratedIndexHint ? ' Tip: add --index <1-9> to target a specific integrated terminal tab.' : ''}`
+      message: `Added ${type} session for ${chosenProject.name}${upserted.binding.id ? ` (${upserted.binding.id.slice(0, 8)})` : ''}.${binding.integrated ? ` Integrated terminal detected${terminalSessionTag ? ` (tag=${terminalSessionTag})` : ''}.` : ''}${binding.integrated && !terminalSessionTag && !integratedIndexHint ? ' Tip: reload Boost hook in this terminal, then re-add to auto-target integrated tab.' : ''}${binding.integrated && !terminalSessionTag && integratedIndexHint ? '' : binding.integrated && !integratedIndexHint ? ' Fallback: --index <1-9>.' : ''}`
     }
   }
 
@@ -808,9 +865,10 @@ async function executeCommandServerInput(
         row.activeAgent.integrated_terminal_index && row.activeAgent.integrated_terminal_index > 0
           ? ` index=${row.activeAgent.integrated_terminal_index}`
           : ''
+      const agentTag = row.activeAgent.terminal_session_tag ? ` tag=${row.activeAgent.terminal_session_tag}` : ''
       lines.push(`[${row.project.name}]`)
       lines.push(
-        `  agent: ${bindingLabel(row.activeAgent)} pid=${row.activeAgent.pid || '-'} ${activeAgentRunning ? 'running' : 'stopped'} integrated=${getBindingIntegratedState(row.activeAgent)}${agentIndex}`
+        `  agent: ${bindingLabel(row.activeAgent)} pid=${row.activeAgent.pid || '-'} ${activeAgentRunning ? 'running' : 'stopped'} integrated=${getBindingIntegratedState(row.activeAgent)}${agentIndex}${agentTag}`
       )
       if (row.devservers.length === 0) {
         lines.push('  devservers: none')
@@ -824,8 +882,9 @@ async function executeCommandServerInput(
           dev.integrated_terminal_index && dev.integrated_terminal_index > 0
             ? ` index=${dev.integrated_terminal_index}`
             : ''
+        const devTag = dev.terminal_session_tag ? ` tag=${dev.terminal_session_tag}` : ''
         lines.push(
-          `  ${paired} devserver: ${bindingLabel(dev)} pid=${dev.pid || '-'} port=${dev.port_hint || '-'} ${running ? 'running' : 'stopped'} integrated=${getBindingIntegratedState(dev)}${devIndex} cmd=${command || '-'}`
+          `  ${paired} devserver: ${bindingLabel(dev)} pid=${dev.pid || '-'} port=${dev.port_hint || '-'} ${running ? 'running' : 'stopped'} integrated=${getBindingIntegratedState(dev)}${devIndex}${devTag} cmd=${command || '-'}`
         )
       }
     }
@@ -1045,9 +1104,7 @@ async function openSurfaceForActive(surface: 'ide' | 'browser' | 'agent'): Promi
     if (defaultAgent && isBindingIntegrated(defaultAgent)) {
       const focusedIntegrated = await focusIntegratedHostForBinding(defaultAgent, active)
       if (focusedIntegrated) {
-        if (defaultAgent.integrated_terminal_index) {
-          void focusIntegratedTerminalIndex(defaultAgent.integrated_terminal_index)
-        }
+        void applyIntegratedTerminalSelection(defaultAgent)
         return { ok: true, message: `Focused IDE-integrated agent host for ${active.name}` }
       }
     }
@@ -1055,9 +1112,7 @@ async function openSurfaceForActive(surface: 'ide' | 'browser' | 'agent'): Promi
     if (defaultDev && isBindingIntegrated(defaultDev)) {
       const focusedIntegrated = await focusIntegratedHostForBinding(defaultDev, active)
       if (focusedIntegrated) {
-        if (defaultDev.integrated_terminal_index) {
-          void focusIntegratedTerminalIndex(defaultDev.integrated_terminal_index)
-        }
+        void applyIntegratedTerminalSelection(defaultDev)
         return { ok: true, message: `Focused IDE-integrated devserver host for ${active.name}` }
       }
     }
@@ -1074,9 +1129,7 @@ async function openSurfaceForActive(surface: 'ide' | 'browser' | 'agent'): Promi
       if (isBindingIntegrated(defaultDev)) {
         const focusedIntegrated = await focusIntegratedHostForBinding(defaultDev, active)
         if (focusedIntegrated) {
-          if (defaultDev.integrated_terminal_index) {
-            void focusIntegratedTerminalIndex(defaultDev.integrated_terminal_index)
-          }
+          void applyIntegratedTerminalSelection(defaultDev)
           return { ok: true, message: `Focused IDE-integrated devserver for ${active.name}` }
         }
         const ide = openIde(active)
@@ -1118,9 +1171,7 @@ async function openSurfaceForActive(surface: 'ide' | 'browser' | 'agent'): Promi
     if (isBindingIntegrated(defaultAgent)) {
       const focusedIntegrated = await focusIntegratedHostForBinding(defaultAgent, active)
       if (focusedIntegrated) {
-        if (defaultAgent.integrated_terminal_index) {
-          void focusIntegratedTerminalIndex(defaultAgent.integrated_terminal_index)
-        }
+        void applyIntegratedTerminalSelection(defaultAgent)
         return { ok: true, message: `Focused IDE-integrated agent for ${active.name}` }
       }
       const ide = openIde(active)

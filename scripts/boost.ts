@@ -66,6 +66,8 @@ function detectTerminalContext(): {
   termProgram?: string
   parentProcess?: string
   currentPid?: string
+  terminalSessionId?: string
+  terminalSessionTag?: string
   executeInCaller: boolean
 } {
   const termProgram = process.env.TERM_PROGRAM || ''
@@ -99,6 +101,8 @@ function detectTerminalContext(): {
     termProgram: termProgram || undefined,
     parentProcess: process.ppid > 0 ? String(process.ppid) : undefined,
     currentPid: process.pid > 0 ? String(process.pid) : undefined,
+    terminalSessionId: (process.env.BOOST_TERMINAL_SESSION_ID || '').trim() || undefined,
+    terminalSessionTag: (process.env.BOOST_TERMINAL_SESSION_TAG || '').trim() || undefined,
     executeInCaller: true
   }
 }

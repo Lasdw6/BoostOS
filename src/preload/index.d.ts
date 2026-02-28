@@ -40,6 +40,8 @@ declare global {
             label?: string
             integrated_terminal?: boolean
             integrated_terminal_index?: number
+            terminal_session_id?: string
+            terminal_session_tag?: string
             pid?: number
             window_id?: number
             cwd_hint?: string

@@ -88,6 +88,14 @@ function normalizeSessionBindings(raw: unknown): SessionBinding[] {
         label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : undefined,
         integrated_terminal: typeof value.integrated_terminal === 'boolean' ? value.integrated_terminal : undefined,
         integrated_terminal_index: parseNumber(value.integrated_terminal_index),
+        terminal_session_id:
+          typeof value.terminal_session_id === 'string' && value.terminal_session_id.trim()
+            ? value.terminal_session_id.trim()
+            : undefined,
+        terminal_session_tag:
+          typeof value.terminal_session_tag === 'string' && value.terminal_session_tag.trim()
+            ? value.terminal_session_tag.trim()
+            : undefined,
         pid: parseNumber(value.pid),
         window_id: parseNumber(value.window_id),
         cwd_hint: typeof value.cwd_hint === 'string' && value.cwd_hint.trim() ? value.cwd_hint.trim() : undefined,

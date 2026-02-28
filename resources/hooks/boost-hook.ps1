@@ -19,6 +19,9 @@ $global:BOOST_HOOK_LOADED = $true
 # Configuration
 $BOOST_SERVER_URL = "http://localhost:45678/command"
 $BOOST_SESSION_ID = [System.Guid]::NewGuid().ToString()
+$BOOST_SESSION_TAG = "boost-$($BOOST_SESSION_ID.Substring(0, 8))"
+$env:BOOST_TERMINAL_SESSION_ID = $BOOST_SESSION_ID
+$env:BOOST_TERMINAL_SESSION_TAG = $BOOST_SESSION_TAG
 $BOOST_HOOK_DIR = Split-Path -Parent $PSCommandPath
 $BOOST_BIN_DIR = Join-Path (Split-Path -Parent $BOOST_HOOK_DIR) "bin"
 $BOOST_CLI_SCRIPT = Join-Path $BOOST_BIN_DIR "boost.ps1"
@@ -75,6 +78,15 @@ $BOOST_LAST_COMMAND_TIME = Get-Date
 
 # Override the prompt function
 function prompt {
+    # Stamp terminal title so integrated-terminal quick-switch can target this session.
+    try {
+        $esc = [char]27
+        $title = "$BOOST_SESSION_TAG :: $($PWD.Path)"
+        Write-Host -NoNewline "$esc]0;$title`a"
+    } catch {
+        # Ignore terminal title update failures.
+    }
+
     # Get current command from history
     $history = Get-History -Count 1 -ErrorAction SilentlyContinue
 
