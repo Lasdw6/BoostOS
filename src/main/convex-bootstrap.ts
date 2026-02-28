@@ -1,5 +1,6 @@
 import { readFile } from 'fs/promises'
-import { getSharedAuthPath } from '@boostos/boost-auth'
+import { homedir } from 'os'
+import { join } from 'path'
 
 type BootstrapResponse = {
   apiKeys?: {
@@ -15,6 +16,20 @@ type PersistedAuthState = {
 
 function getBackendUrl(): string {
   return (process.env.BOOST_API_URL || 'https://sleek-mockingbird-162.convex.site').replace(/\/$/, '')
+}
+
+function getSharedAuthPath(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA || process.env.LOCALAPPDATA
+    if (appData) return join(appData, 'Boost', 'auth', 'session.json')
+  }
+  if (platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'Boost', 'auth', 'session.json')
+  }
+  const xdg = process.env.XDG_CONFIG_HOME
+  return xdg
+    ? join(xdg, 'boost', 'auth', 'session.json')
+    : join(homedir(), '.config', 'boost', 'auth', 'session.json')
 }
 
 async function readSharedSessionToken(): Promise<string | null> {

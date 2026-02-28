@@ -57,5 +57,5 @@ npmRebuild: false
 publish:
   provider: github
   owner: Lasdw6
-  repo: Boost
+  repo: BoostOS
   releaseType: release
