@@ -1,0 +1,21 @@
+[Unit]
+Description=BoostOS API Proxy (token counting & cost tracking)
+Documentation=file:///opt/boostos/docs/phase2-rag-daemon.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=BOOSTOS_LINUX_USER
+ExecStart=/opt/boostos/rag/venv/bin/boostos-proxy \
+    --host 127.0.0.1 \
+    --port 7701 \
+    --log-level warning
+Restart=on-failure
+RestartSec=3s
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

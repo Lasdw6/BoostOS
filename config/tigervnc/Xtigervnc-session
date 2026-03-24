@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LANG="${LANG:-en_US.UTF-8}"
+export XRDP_SESSION=1
+export DESKTOP_SESSION=xterm
+export XDG_CURRENT_DESKTOP=X-Generic
+export XDG_SESSION_DESKTOP=xterm
+export XDG_SESSION_TYPE=x11
+export GDK_BACKEND=x11
+
+USER_HOME="$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || true)"
+if [[ -n "$USER_HOME" ]]; then
+  export HOME="$USER_HOME"
+fi
+
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+if [[ -f /etc/profile ]]; then
+  # shellcheck disable=SC1091
+  . /etc/profile
+fi
+
+if [[ -f "$HOME/.profile" ]]; then
+  # shellcheck disable=SC1090
+  . "$HOME/.profile"
+fi
+
+exec dbus-launch --exit-with-session xterm >>"$HOME/.xsession-errors" 2>&1

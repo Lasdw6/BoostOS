@@ -1,0 +1,23 @@
+[Unit]
+Description=BoostOS RAG Daemon
+Documentation=file:///opt/boostos/docs/phase2-rag-daemon.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+User=BOOSTOS_LINUX_USER
+WorkingDirectory=/opt/boostos/rag
+ExecStart=/opt/boostos/rag/venv/bin/python -m boostos_rag.daemon \
+    --config /etc/boostos/rag.conf
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=180
+KillMode=mixed
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

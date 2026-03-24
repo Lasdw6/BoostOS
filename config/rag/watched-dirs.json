@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "dirs": [
+    {
+      "path": "/home/boost/projects",
+      "recursive": true,
+      "enabled": true
+    }
+  ]
+}

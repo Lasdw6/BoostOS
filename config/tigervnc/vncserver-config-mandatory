@@ -1,0 +1,3 @@
+$SecurityTypes = "None";
+$localhost = "yes";
+$session = "xterm";
