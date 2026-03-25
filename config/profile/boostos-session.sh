@@ -27,6 +27,21 @@ export BOOSTOS_RAG_URL="${BOOSTOS_RAG_URL:-http://127.0.0.1:7700}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:7701}"
 export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://127.0.0.1:7701}"
 
+# BoostOS agent registry — load agent ID from registration file so Claude Code
+# hooks (hook-pre / hook-post) attribute tool calls to the correct agent.
+# Agents set this by running: export BOOSTOS_AGENT_ID=$(boostos-agent register --name "...")
+_AGENT_ID_FILE="${HOME}/.boostos_agent_id"
+if [ -z "${BOOSTOS_AGENT_ID:-}" ] && [ -s "${_AGENT_ID_FILE}" ]; then
+  export BOOSTOS_AGENT_ID="$(cat "${_AGENT_ID_FILE}")"
+fi
+unset _AGENT_ID_FILE
+
+# When BOOSTOS_AGENT_ID is set, inject it into API calls via header so the
+# proxy can attribute token usage to the correct agent.
+if [ -n "${BOOSTOS_AGENT_ID:-}" ]; then
+  export ANTHROPIC_ADDITIONAL_HEADERS="${ANTHROPIC_ADDITIONAL_HEADERS:-} X-Agent-ID: ${BOOSTOS_AGENT_ID}"
+fi
+
 if [ -n "${HOME:-}" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
   export NVM_DIR="$HOME/.nvm"
   # Load the default Node installation for login shells and editor terminals.

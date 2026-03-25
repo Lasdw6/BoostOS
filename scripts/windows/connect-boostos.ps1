@@ -4,7 +4,7 @@ param(
     [string]$LinuxUser = "boost",
     [int]$RdpPort = 3390,
     [int]$GuestRdpPort = 3391,
-    [ValidateSet("minimal", "xfce")]
+    [ValidateSet("minimal", "xfce", "niri")]
     [string]$SessionMode = "xfce",
     [switch]$UseRelay,
     [switch]$OpenMstsc
@@ -25,7 +25,7 @@ function Invoke-WslRoot {
         [string]$Command
     )
 
-    & wsl.exe -d $Name -u root -- bash -lc $Command
+    $Command | & wsl.exe -d $Name -u root -- bash -lc "tr -d '\r' | bash -s --"
     if ($LASTEXITCODE -ne 0) {
         throw "WSL command failed: $Command"
     }
@@ -116,6 +116,7 @@ function Sync-GuestXrdpAssets {
 
     $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     $configRoot = Convert-WindowsPathToWslPath -Path (Join-Path $repoRoot "config\xrdp")
+    $niriConfigRoot = Convert-WindowsPathToWslPath -Path (Join-Path $repoRoot "config\niri")
 
     $command = @"
 set -euo pipefail
@@ -123,10 +124,15 @@ umount /tmp/.X11-unix 2>/dev/null || true
 install -d -m 01777 /tmp/.X11-unix
 install -d -m 0755 /etc/xrdp
 install -d -m 0755 /etc/boostos/xrdp
+install -d -m 0755 /etc/boostos/niri
 install -m 0755 '$configRoot/startwm.sh' /etc/xrdp/startwm.sh
 install -m 0755 '$configRoot/startwm-common.sh' /etc/boostos/xrdp/startwm-common.sh
 install -m 0755 '$configRoot/startwm-minimal.sh' /etc/boostos/xrdp/startwm-minimal.sh
 install -m 0755 '$configRoot/startwm-xfce.sh' /etc/boostos/xrdp/startwm-xfce.sh
+install -m 0755 '$configRoot/startwm-niri.sh' /etc/boostos/xrdp/startwm-niri.sh
+install -m 0755 '$configRoot/niri-session.sh' /etc/boostos/xrdp/niri-session.sh
+install -m 0755 '$configRoot/niri-cursor-hide.py' /etc/boostos/xrdp/niri-cursor-hide.py
+install -m 0644 '$niriConfigRoot/config.kdl' /etc/boostos/niri/config.kdl
 printf '%s\n' '$Mode' >/etc/boostos/xrdp-session-mode
 cat >/home/$LinuxUser/.xsession <<'EOF'
 #!/bin/sh
@@ -175,6 +181,133 @@ function Ensure-GuestCommand {
     return $LASTEXITCODE -eq 0
 }
 
+function Ensure-GuestNiri {
+    param([string]$Name)
+
+    $command = @'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+if command -v niri >/dev/null 2>&1; then
+  echo "present"
+  exit 0
+fi
+
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  gnupg \
+  lsb-release \
+  matchbox-window-manager \
+  python3 \
+  xwayland \
+  xz-utils
+
+. /etc/os-release
+ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+ubuntu_ver="${VERSION_ID:-unknown}"
+ppa_base="https://ppa.launchpadcontent.net/avengemedia/danklinux/ubuntu"
+ppa_key_url="https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xFC44813D2A7788B7"
+packages_url="${ppa_base}/dists/${ubuntu_codename}/main/binary-amd64/Packages.gz"
+
+if [[ -n "$ubuntu_codename" ]] && python3 - "$packages_url" <<'PY'
+import gzip
+import sys
+import urllib.request
+
+url = sys.argv[1]
+request = urllib.request.Request(url, headers={"User-Agent": "BoostOS"})
+with urllib.request.urlopen(request, timeout=20) as response:
+    data = gzip.decompress(response.read()).decode("utf-8", "replace")
+
+sys.exit(0 if "\nPackage: niri\n" in f"\n{data}" else 1)
+PY
+then
+  install -d -m 0755 /usr/share/keyrings
+  curl -fsSL "$ppa_key_url" | gpg --dearmor >/usr/share/keyrings/danklinux-archive-keyring.gpg
+  cat >/etc/apt/sources.list.d/danklinux.list <<EOF
+deb [signed-by=/usr/share/keyrings/danklinux-archive-keyring.gpg arch=amd64] $ppa_base $ubuntu_codename main
+EOF
+  apt-get update -qq
+  apt-get install -y --no-install-recommends niri
+  exit 0
+fi
+
+echo "No packaged niri build found for Ubuntu ${ubuntu_ver} (${ubuntu_codename:-unknown}); building from source" >&2
+
+apt-get install -y --no-install-recommends \
+  build-essential \
+  clang \
+  libdbus-1-dev \
+  libdisplay-info-dev \
+  libegl1-mesa-dev \
+  libgbm-dev \
+  libinput-dev \
+  libpango1.0-dev \
+  libpipewire-0.3-dev \
+  libseat-dev \
+  libsystemd-dev \
+  libudev-dev \
+  libwayland-dev \
+  libxkbcommon-dev \
+  lld \
+  pkg-config
+
+export CARGO_HOME=/opt/boostos/cargo
+export RUSTUP_HOME=/opt/boostos/rustup
+export PATH="$CARGO_HOME/bin:$PATH"
+
+if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --no-modify-path
+fi
+
+tmpdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+release_json="$tmpdir/release.json"
+curl -fsSL https://api.github.com/repos/niri-wm/niri/releases/latest >"$release_json"
+version_tag="$(python3 - "$release_json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    print(json.load(handle)["tag_name"])
+PY
+)"
+source_url="https://github.com/niri-wm/niri/archive/refs/tags/${version_tag}.tar.gz"
+curl -fsSL "$source_url" | tar -xz -C "$tmpdir"
+srcdir="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -name 'niri-*' | head -n 1)"
+if [[ -z "$srcdir" ]] || [[ ! -f "$srcdir/Cargo.toml" ]]; then
+  echo "Unable to locate extracted niri source tree in $tmpdir" >&2
+  exit 1
+fi
+python3 - "$srcdir/src/backend/winit.rs" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = '.with_inner_size(LogicalSize::new(1280.0, 800.0))\n'
+replacement = needle + '            .with_decorations(false)\n'
+if '.with_decorations(false)' not in text:
+    if needle not in text:
+        raise SystemExit(f"Could not find expected winit builder line in {path}")
+    text = text.replace(needle, replacement, 1)
+    path.write_text(text, encoding="utf-8")
+PY
+"$CARGO_HOME/bin/cargo" build --manifest-path "$srcdir/Cargo.toml" --release
+install -m 0755 "$srcdir/target/release/niri" /usr/local/bin/niri
+echo "Installed niri from source release ${version_tag}" >&2
+'@
+
+    Invoke-WslRoot -Name $Name -Command $command
+}
+
 function Start-Relay {
     param(
         [string]$Name,
@@ -210,6 +343,17 @@ else {
 }
 
 Sync-GuestXrdpAssets -Name $DistroName -Mode $SessionMode
+
+if ($SessionMode -eq "niri") {
+    $niriPresent = & wsl.exe -d $DistroName -- bash -lc "command -v niri >/dev/null 2>&1 && echo yes || echo no"
+    $niriPresent = ($niriPresent -replace "`0", "").Trim()
+    if ($niriPresent -ne "yes") {
+        Write-Step "Installing niri (not found in distro)"
+        Ensure-GuestNiri -Name $DistroName
+    } else {
+        Write-Host "  niri already installed, skipping"
+    }
+}
 
 Write-Step "Starting BoostOS remoting services"
 Invoke-WslRoot -Name $DistroName -Command @"

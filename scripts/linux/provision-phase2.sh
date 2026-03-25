@@ -41,12 +41,39 @@ apt-get install -y --no-install-recommends \
   python3-dev \
   libsqlite3-dev
 
+# ── Rust toolchain + boostos-overlay binary ───────────────────────────────────
+if [[ ! -f /usr/local/bin/boostos-overlay ]]; then
+  echo "==> Installing Rust toolchain (stable)"
+  export CARGO_HOME=/opt/boostos/cargo
+  export RUSTUP_HOME=/opt/boostos/rustup
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --no-modify-path
+  export PATH="/opt/boostos/cargo/bin:$PATH"
+
+  echo "==> Building boostos-overlay"
+  CARGO_HOME=/opt/boostos/cargo RUSTUP_HOME=/opt/boostos/rustup \
+    /opt/boostos/cargo/bin/cargo build \
+      --release \
+      --manifest-path /opt/boostos/src/boostos_fuse/Cargo.toml \
+      --target-dir /opt/boostos/src/boostos_fuse/target
+
+  install -m 0755 \
+    /opt/boostos/src/boostos_fuse/target/release/boostos-overlay \
+    /usr/local/bin/boostos-overlay
+else
+  echo "==> boostos-overlay already installed, skipping Rust build"
+fi
+
+# Allow the Linux user to create FUSE mounts (group membership)
+usermod -aG fuse "$LINUX_USER" 2>/dev/null || true
+
 # ── Directories ───────────────────────────────────────────────────────────────
 # The daemon runs as the Linux user, so data dirs are owned by that user.
 echo "==> Creating directories"
 install -d -m 0755 -o "$LINUX_USER" -g "$LINUX_USER" /var/lib/boostos/rag
 install -d -m 0755 -o "$LINUX_USER" -g "$LINUX_USER" /var/lib/boostos/rag/chroma
 install -d -m 0755 -o "$LINUX_USER" -g "$LINUX_USER" /var/lib/boostos/rag/models
+install -d -m 0755 -o "$LINUX_USER" -g "$LINUX_USER" /var/lib/boostos/agents
 install -d -m 0755 /opt/boostos/rag
 
 # ── Python virtualenv ─────────────────────────────────────────────────────────
@@ -100,6 +127,30 @@ fi
 # Update model in config if non-default
 if [[ "$EMBEDDING_MODEL" != "all-MiniLM-L6-v2" ]]; then
   sed -i "s/^embedding_model = .*/embedding_model = $EMBEDDING_MODEL/" /etc/boostos/rag.conf
+fi
+
+# Write default feature flags on first provision only
+if [[ ! -f /var/lib/boostos/features.json ]]; then
+  cat >/var/lib/boostos/features.json <<'FEATEOF'
+{
+  "trigram_grep": true,
+  "json_commands": true,
+  "api_proxy_tracking": true,
+  "rag_search": true,
+  "fuse_overlay": true,
+  "agent_registry": true
+}
+FEATEOF
+  chown "$LINUX_USER:$LINUX_USER" /var/lib/boostos/features.json
+fi
+
+# Install Claude Code hook settings template (only if not already present)
+CLAUDE_DIR="/home/$LINUX_USER/.claude"
+install -d -m 0755 -o "$LINUX_USER" -g "$LINUX_USER" "$CLAUDE_DIR"
+if [[ ! -f "$CLAUDE_DIR/settings.json" ]]; then
+  install -m 0644 -o "$LINUX_USER" -g "$LINUX_USER" \
+    /opt/boostos/config/claude/settings.json \
+    "$CLAUDE_DIR/settings.json"
 fi
 
 # Write default watched-dirs on first provision only (preserve user config on re-runs)

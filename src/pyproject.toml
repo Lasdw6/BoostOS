@@ -17,10 +17,12 @@ dependencies = [
 ]
 
 [project.scripts]
-boostos-search = "boostos_rag.cli:search_cmd"
-boostos-rag    = "boostos_rag.cli:rag_cmd"
-boostos-proxy  = "boostos_rag.proxy:main"
-boostos-stats  = "boostos_rag.stats_cli:main"
+boostos-search  = "boostos_rag.cli:search_cmd"
+boostos-rag     = "boostos_rag.cli:rag_cmd"
+boostos-proxy   = "boostos_rag.proxy:main"
+boostos-stats   = "boostos_rag.stats_cli:main"
+boostos-agent   = "boostos_rag.agent_cli:agent_cmd"
+boostos-feature = "boostos_rag.feature_cli:feature_cmd"
 
 [tool.setuptools.packages.find]
 where = ["."]

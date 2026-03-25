@@ -330,6 +330,15 @@ def _passthrough() -> None:
 
 def main() -> None:
     try:
+        # Feature flag check — fast file read; falls through if file missing
+        try:
+            from .features import get_feature
+            if not get_feature("trigram_grep"):
+                _passthrough()
+                return
+        except Exception:
+            pass
+
         args = _parse(sys.argv[1:])
 
         # Only accelerate recursive directory searches

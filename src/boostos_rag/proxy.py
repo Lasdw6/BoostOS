@@ -18,10 +18,12 @@ latency. Usage is extracted from the final SSE event before recording.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 import click
 import httpx
@@ -29,8 +31,14 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
-from . import proxy_db
+from . import agent_registry, proxy_db
 from .proxy_db import DEFAULT_DB
+
+# Claude Code always sends this exact set of built-in tools.
+_CLAUDE_CODE_TOOLS = {"Bash", "Read", "Write", "Edit", "Glob", "Grep"}
+
+# Cursor injects these request headers.
+_CURSOR_HEADERS = {"x-cursor-checksum", "x-cursor-client-version", "x-cursor-timezone"}
 
 logger = logging.getLogger("boostos_proxy")
 
@@ -97,6 +105,7 @@ async def _forward(
     body: bytes,
     headers: dict,
     start: float,
+    agent_id: Optional[str] = None,
 ) -> Response:
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.request(
@@ -113,7 +122,7 @@ async def _forward(
             data = resp.json()
             in_tok, out_tok = _extract_usage_non_stream(provider, data)
             if in_tok or out_tok:
-                proxy_db.record(provider, model, in_tok, out_tok, duration_ms)
+                proxy_db.record(provider, model, in_tok, out_tok, duration_ms, agent_id)
         except Exception:
             pass
 
@@ -134,6 +143,7 @@ async def _stream(
     body: bytes,
     headers: dict,
     start: float,
+    agent_id: Optional[str] = None,
 ) -> AsyncGenerator[bytes, None]:
     in_tok = out_tok = 0
 
@@ -162,7 +172,67 @@ async def _stream(
 
     if in_tok or out_tok:
         duration_ms = int((time.time() - start) * 1000)
-        proxy_db.record(provider, model, in_tok, out_tok, duration_ms)
+        proxy_db.record(provider, model, in_tok, out_tok, duration_ms, agent_id)
+
+
+# ── Tool / session detection ──────────────────────────────────────────────────
+
+def _get_system(body: dict) -> str:
+    """Extract the system prompt text from a request body."""
+    system = body.get("system", "")
+    if isinstance(system, list):
+        system = " ".join(s.get("text", "") for s in system if isinstance(s, dict))
+    if not system:
+        for msg in body.get("messages", []):
+            if msg.get("role") == "system":
+                c = msg.get("content", "")
+                system = c if isinstance(c, str) else " ".join(
+                    x.get("text", "") for x in c if isinstance(x, dict)
+                )
+                break
+    return system or ""
+
+
+def _detect_tool(req_headers: dict, body: dict) -> str:
+    """Identify the coding tool from request headers and body."""
+    # Cursor sends distinctive headers
+    if any(h in req_headers for h in _CURSOR_HEADERS):
+        return "cursor"
+    # Claude Code always sends its full built-in tool set
+    tool_names = {t.get("name", "") for t in body.get("tools", []) if isinstance(t, dict)}
+    if _CLAUDE_CODE_TOOLS.issubset(tool_names):
+        return "claude-code"
+    # Fallback: check User-Agent
+    ua = req_headers.get("user-agent", "").lower()
+    if "cursor" in ua:
+        return "cursor"
+    if "vscode" in ua or "copilot" in ua:
+        return "vscode"
+    return "unknown"
+
+
+def _extract_workspace(body: dict) -> Optional[str]:
+    """Extract the working directory from a Claude Code system prompt."""
+    system = _get_system(body)
+    if not system:
+        return None
+    # Claude Code embeds cwd in its system prompt in several formats
+    for pattern in (
+        r"<cwd>(.*?)</cwd>",
+        r"Current working directory:\s*(\S+)",
+        r"cwd[\"']?\s*[:=]\s*[\"']?(/\S+)",
+    ):
+        m = re.search(pattern, system, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _session_key(body: dict) -> str:
+    """Stable 12-char hex key for this conversation, derived from system prompt."""
+    system = _get_system(body)
+    # Use first 500 chars — stable within a conversation, changes between sessions
+    return hashlib.sha1(system[:500].encode()).hexdigest()[:12]
 
 
 # ── Main route ────────────────────────────────────────────────────────────────
@@ -175,13 +245,28 @@ async def proxy(request: Request, path: str) -> Response:
     body     = await request.body()
     start    = time.time()
 
-    # Parse body for model name and stream flag
+    # Agent attribution — explicit header takes priority; otherwise auto-detect
+    agent_id: Optional[str] = request.headers.get("x-agent-id") or None
+
+    # Parse body for model name, stream flag, and auto-detection signals
     model     = "unknown"
     is_stream = False
     try:
         parsed = json.loads(body)
         model  = parsed.get("model", "unknown")
         is_stream = bool(parsed.get("stream", False))
+
+        # Auto-detect tool and session from request if no explicit agent ID
+        if not agent_id:
+            req_headers_lower = {k.lower(): v for k, v in request.headers.items()}
+            tool = _detect_tool(req_headers_lower, parsed)
+            if tool != "unknown":
+                workspace = _extract_workspace(parsed)
+                skey = _session_key(parsed)
+                try:
+                    agent_id = agent_registry.upsert_detected(skey, tool, workspace)
+                except Exception:
+                    pass
 
         # Inject stream_options for OpenAI so it includes usage in last chunk
         if is_stream and provider == "openai":
@@ -192,11 +277,11 @@ async def proxy(request: Request, path: str) -> Response:
 
     if is_stream:
         return StreamingResponse(
-            _stream(provider, model, url, body, headers, start),
+            _stream(provider, model, url, body, headers, start, agent_id),
             media_type="text/event-stream",
         )
 
-    return await _forward(provider, model, url, body, headers, start)
+    return await _forward(provider, model, url, body, headers, start, agent_id)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -210,5 +295,6 @@ def main(host: str, port: int, db: str, log_level: str) -> None:
     """BoostOS API proxy — token counting and cost tracking."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.WARNING))
     proxy_db.init(db)
+    agent_registry.init()
     logger.info("Proxy starting on %s:%d  db=%s", host, port, db)
     uvicorn.run(app, host=host, port=port, log_level=log_level, access_log=False)

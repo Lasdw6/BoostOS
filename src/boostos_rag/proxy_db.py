@@ -24,10 +24,17 @@ CREATE TABLE IF NOT EXISTS api_calls (
     input_tok   INTEGER NOT NULL DEFAULT 0,
     output_tok  INTEGER NOT NULL DEFAULT 0,
     cost_usd    REAL    NOT NULL DEFAULT 0.0,
-    duration_ms INTEGER NOT NULL DEFAULT 0
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    agent_id    TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_ts    ON api_calls(ts);
-CREATE INDEX IF NOT EXISTS idx_model ON api_calls(model);
+CREATE INDEX IF NOT EXISTS idx_ts       ON api_calls(ts);
+CREATE INDEX IF NOT EXISTS idx_model    ON api_calls(model);
+CREATE INDEX IF NOT EXISTS idx_agent_id ON api_calls(agent_id);
+"""
+
+_MIGRATION = """
+ALTER TABLE api_calls ADD COLUMN agent_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_agent_id ON api_calls(agent_id);
 """
 
 # Cost per million tokens — update when provider pricing changes
@@ -62,6 +69,13 @@ def init(db_path: str = DEFAULT_DB) -> None:
     _db.execute("PRAGMA journal_mode=WAL")
     _db.execute("PRAGMA synchronous=NORMAL")
     _db.executescript(_SCHEMA)
+    # Migrate older DBs that lack agent_id column
+    cols = {r[1] for r in _db.execute("PRAGMA table_info(api_calls)").fetchall()}
+    if "agent_id" not in cols:
+        try:
+            _db.executescript(_MIGRATION)
+        except Exception:
+            pass
     _db.commit()
 
 
@@ -71,6 +85,7 @@ def record(
     input_tok: int,
     output_tok: int,
     duration_ms: int = 0,
+    agent_id: Optional[str] = None,
 ) -> None:
     if _db is None:
         return
@@ -79,9 +94,9 @@ def record(
         with _db:
             _db.execute(
                 "INSERT INTO api_calls"
-                "(ts, provider, model, input_tok, output_tok, cost_usd, duration_ms)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (time.time(), provider, model, input_tok, output_tok, cost, duration_ms),
+                "(ts, provider, model, input_tok, output_tok, cost_usd, duration_ms, agent_id)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (time.time(), provider, model, input_tok, output_tok, cost, duration_ms, agent_id),
             )
     except Exception:
         pass
@@ -119,3 +134,22 @@ def query_totals(since_ts: float) -> dict:
         "output_tok": row[2] or 0,
         "cost_usd": row[3] or 0.0,
     }
+
+
+def query_summary_with_agents(since_ts: float) -> list[dict]:
+    """Per-(provider, model, agent) aggregates since since_ts. Used by debug panel."""
+    if _db is None:
+        return []
+    rows = _db.execute(
+        "SELECT provider, model, agent_id, COUNT(*), SUM(input_tok), SUM(output_tok), SUM(cost_usd)"
+        " FROM api_calls WHERE ts >= ?"
+        " GROUP BY provider, model, agent_id ORDER BY SUM(cost_usd) DESC",
+        (since_ts,),
+    ).fetchall()
+    return [
+        {
+            "provider": r[0], "model": r[1], "agent_id": r[2],
+            "calls": r[3], "input_tok": r[4], "output_tok": r[5], "cost_usd": r[6],
+        }
+        for r in rows
+    ]

@@ -38,6 +38,22 @@ def _passthrough(cmd: str, args: list[str]) -> None:
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
+def _load_agent_pids() -> dict[int, str]:
+    """Return {pid: agent_name} from the agent registry. Best-effort, never raises."""
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(
+            "file:/var/lib/boostos/agents/registry.db?mode=ro", uri=True, timeout=0.5
+        )
+        rows = conn.execute(
+            "SELECT pid, name FROM agents WHERE pid IS NOT NULL AND status IN ('active','stale')"
+        ).fetchall()
+        conn.close()
+        return {r[0]: r[1] for r in rows if r[0] is not None}
+    except Exception:
+        return {}
+
+
 def _parse_ps(_args: list[str]) -> list[dict]:
     """Running processes as compact JSON. Ignores user format flags; use --raw for those."""
     result = subprocess.run(
@@ -45,6 +61,7 @@ def _parse_ps(_args: list[str]) -> list[dict]:
          "--no-headers", "--sort=-pcpu"],
         capture_output=True, text=True,
     )
+    agent_pids = _load_agent_pids()
     procs = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -65,7 +82,10 @@ def _parse_ps(_args: list[str]) -> list[dict]:
         if rss_kb == 0 and name.startswith("["):
             continue
         mem_mb = round(rss_kb / 1024, 1)
-        procs.append({"pid": pid, "name": name, "cmd": cmd, "cpu": cpu, "mem_mb": mem_mb})
+        entry: dict = {"pid": pid, "name": name, "cmd": cmd, "cpu": cpu, "mem_mb": mem_mb}
+        if pid in agent_pids:
+            entry["agent"] = agent_pids[pid]
+        procs.append(entry)
     return procs
 
 
@@ -179,6 +199,15 @@ def main() -> None:
         args = [a for a in args if a != RAW_FLAG]
         _passthrough(cmd, args)
         return  # unreachable after execv
+
+    # Feature flag check — transparent passthrough if json_commands is disabled
+    try:
+        from .features import get_feature
+        if not get_feature("json_commands"):
+            _passthrough(cmd, args)
+            return
+    except Exception:
+        pass
 
     parser = _PARSERS.get(cmd)
     if parser is None:

@@ -12,6 +12,9 @@ case "$MODE" in
   xfce)
     TARGET="/etc/boostos/xrdp/startwm-xfce.sh"
     ;;
+  niri)
+    TARGET="/etc/boostos/xrdp/startwm-niri.sh"
+    ;;
   minimal|"")
     TARGET="/etc/boostos/xrdp/startwm-minimal.sh"
     ;;

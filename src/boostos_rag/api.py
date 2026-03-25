@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from . import embedder, indexer, store
+from . import agent_registry, embedder, indexer, store
+from . import proxy_db as _proxy_db
 from .config import Settings, WatchDir, save_watch_dirs
+from .debug_panel import render as _render_debug
+from .features import all_features, set_feature
 
 _settings: Optional[Settings] = None
 _change_queue: Optional[asyncio.Queue] = None
@@ -30,6 +34,11 @@ def configure(settings: Settings, change_queue: asyncio.Queue) -> None:
     global _settings, _change_queue
     _settings = settings
     _change_queue = change_queue
+    # Initialise agent registry (creates DB if needed)
+    agent_registry.init()
+    # Open proxy DB read/write so usage_today can query it.
+    # The proxy service writes to the same file; WAL mode allows concurrent access.
+    _proxy_db.init()
 
 
 def set_ready() -> None:
@@ -75,6 +84,25 @@ class IndexRequest(BaseModel):
 class WatchDirIn(BaseModel):
     path: str
     recursive: bool = True
+
+
+class AgentRegisterIn(BaseModel):
+    name: str
+    pid: Optional[int] = None
+    workspace: Optional[str] = None
+    model: Optional[str] = None
+
+
+class ToolCallIn(BaseModel):
+    tool_name: str
+    input_text: Optional[str] = None
+    output_text: Optional[str] = None
+    latency_ms: Optional[int] = None
+    status: str = "ok"
+
+
+class FeatureToggleIn(BaseModel):
+    enabled: bool
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -187,6 +215,94 @@ def remove_watched(dir_path: str) -> dict[str, Any]:
         raise HTTPException(404, detail=f"Not watching: {full}")
     save_watch_dirs(_settings.watch_config_path, _settings.watch_dirs)
     return {"removed": True, "path": full}
+
+
+# ── Agent Registry ────────────────────────────────────────────────────────────
+
+@app.get("/agents")
+def get_agents(include_inactive: bool = False) -> dict[str, Any]:
+    agents = agent_registry.list_agents(include_inactive=include_inactive)
+    return {"agents": agents}
+
+
+@app.post("/agents")
+def register_agent(req: AgentRegisterIn) -> dict[str, Any]:
+    agent_id = agent_registry.register(
+        name=req.name,
+        pid=req.pid,
+        workspace=req.workspace,
+        model=req.model,
+    )
+    return {"id": agent_id, "name": req.name}
+
+
+@app.put("/agents/{agent_id}/ping")
+def ping_agent(agent_id: str) -> dict[str, Any]:
+    if not agent_registry.ping(agent_id):
+        raise HTTPException(404, detail="Agent not found")
+    return {"ok": True}
+
+
+@app.delete("/agents/{agent_id}")
+def unregister_agent(agent_id: str) -> dict[str, Any]:
+    if not agent_registry.unregister(agent_id):
+        raise HTTPException(404, detail="Agent not found")
+    return {"unregistered": agent_id}
+
+
+@app.get("/agents/{agent_id}/tools")
+def get_agent_tools(agent_id: str, limit: int = 50) -> dict[str, Any]:
+    if agent_registry.get_agent(agent_id) is None:
+        raise HTTPException(404, detail="Agent not found")
+    calls = agent_registry.get_tool_calls(agent_id, limit=limit)
+    return {"agent_id": agent_id, "calls": calls}
+
+
+@app.post("/agents/{agent_id}/tools")
+def record_agent_tool(agent_id: str, req: ToolCallIn) -> dict[str, Any]:
+    if agent_registry.get_agent(agent_id) is None:
+        raise HTTPException(404, detail="Agent not found")
+    row_id = agent_registry.record_tool_call(
+        agent_id=agent_id,
+        tool_name=req.tool_name,
+        input_text=req.input_text,
+        output_text=req.output_text,
+        latency_ms=req.latency_ms,
+        status=req.status,
+    )
+    return {"id": row_id}
+
+
+# ── Feature Flags ─────────────────────────────────────────────────────────────
+
+@app.get("/features")
+def get_features() -> dict[str, Any]:
+    return {"features": all_features()}
+
+
+@app.post("/features/{name}")
+def toggle_feature(name: str, req: FeatureToggleIn) -> dict[str, Any]:
+    set_feature(name, req.enabled)
+    return {"name": name, "enabled": req.enabled}
+
+
+# ── Debug Panel ───────────────────────────────────────────────────────────────
+
+@app.get("/debug", response_class=HTMLResponse)
+def debug_panel() -> str:
+    return _render_debug()
+
+
+@app.get("/usage/today")
+def usage_today() -> dict[str, Any]:
+    """Today's API usage aggregated by provider/model/agent. Used by debug panel."""
+    import time as _time
+    # Start of today (UTC midnight)
+    now = _time.time()
+    today_start = now - (now % 86400)
+    rows = _proxy_db.query_summary_with_agents(today_start)
+    totals = _proxy_db.query_totals(today_start)
+    return {"rows": rows, "totals": totals}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
