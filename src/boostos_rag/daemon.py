@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 import uvicorn
 
-from . import api, embedder, indexer, store, trigram
+from . import agent_ingest, api, embedder, indexer, store, trigram
 from . import watcher as watcher_mod
 from .config import load_settings
 
@@ -100,7 +100,8 @@ async def _async_main(settings) -> None:
     obs = watcher_mod.start_watcher(enabled_dirs, change_queue, loop)
     api.set_observer(obs)
 
-    indexer_task = asyncio.create_task(indexer.run_indexer_worker(change_queue))
+    indexer_task  = asyncio.create_task(indexer.run_indexer_worker(change_queue))
+    ingest_task   = asyncio.create_task(agent_ingest.run_forever())
 
     api.set_ready()
     _sd_notify("READY=1")
@@ -122,17 +123,18 @@ async def _async_main(settings) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(
             sig,
-            lambda: asyncio.create_task(_shutdown(server, obs, indexer_task)),
+            lambda: asyncio.create_task(_shutdown(server, obs, indexer_task, ingest_task)),
         )
 
     await server.serve()
 
 
-async def _shutdown(server, observer, indexer_task: asyncio.Task) -> None:
+async def _shutdown(server, observer, indexer_task: asyncio.Task, ingest_task: asyncio.Task) -> None:
     logger.info("Graceful shutdown…")
     observer.stop()
     observer.join(timeout=5)
     indexer_task.cancel()
+    ingest_task.cancel()
     server.should_exit = True
 
 

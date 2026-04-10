@@ -50,10 +50,23 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
 
+CREATE TABLE IF NOT EXISTS token_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id    TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    input_tok   INTEGER NOT NULL DEFAULT 0,
+    output_tok  INTEGER NOT NULL DEFAULT 0,
+    cache_read  INTEGER NOT NULL DEFAULT 0,
+    cache_write INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (agent_id) REFERENCES agents(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_agents_status  ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agents_pid     ON agents(pid);
 CREATE INDEX IF NOT EXISTS idx_tools_agent    ON tool_calls(agent_id);
 CREATE INDEX IF NOT EXISTS idx_tools_ts       ON tool_calls(ts);
+CREATE INDEX IF NOT EXISTS idx_usage_agent    ON token_usage(agent_id);
+CREATE INDEX IF NOT EXISTS idx_usage_ts       ON token_usage(ts);
 """
 
 
@@ -156,6 +169,7 @@ def record_tool_call(
     output_text: Optional[str] = None,
     latency_ms: Optional[int] = None,
     status: str = "ok",
+    ts: Optional[float] = None,
 ) -> int:
     """Record a tool call. Returns the row id."""
     with _conn():
@@ -164,7 +178,7 @@ def record_tool_call(
             " VALUES (?,?,?,?,?,?,?)",
             (
                 agent_id,
-                time.time(),
+                ts if ts is not None else time.time(),
                 tool_name,
                 (input_text or "")[:_MAX_TEXT],
                 (output_text or "")[:_MAX_TEXT],
@@ -225,3 +239,54 @@ def upsert_detected(session_key: str, tool: str, workspace: Optional[str]) -> st
                 (agent_id, tool, workspace, now, now),
             )
     return agent_id
+
+
+def update_model(agent_id: str, model: str) -> None:
+    """Set the model field on an agent record if not already set."""
+    with _conn():
+        _conn().execute(
+            "UPDATE agents SET model=? WHERE id=? AND (model IS NULL OR model='')",
+            (model, agent_id),
+        )
+
+
+def touch(agent_id: str, ts: float) -> None:
+    """Update last_seen without changing status."""
+    with _conn():
+        _conn().execute(
+            "UPDATE agents SET last_seen=MAX(last_seen,?) WHERE id=?",
+            (ts, agent_id),
+        )
+
+
+def record_usage(
+    agent_id: str,
+    input_tok: int,
+    output_tok: int,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    ts: Optional[float] = None,
+) -> None:
+    """Record a token usage event (one per API call or assistant turn)."""
+    with _conn():
+        _conn().execute(
+            "INSERT INTO token_usage (agent_id, ts, input_tok, output_tok, cache_read, cache_write)"
+            " VALUES (?,?,?,?,?,?)",
+            (agent_id, ts if ts is not None else time.time(),
+             input_tok, output_tok, cache_read, cache_write),
+        )
+
+
+def get_usage(agent_id: str) -> dict:
+    """Return aggregate token usage for an agent."""
+    row = _conn().execute(
+        "SELECT SUM(input_tok), SUM(output_tok), SUM(cache_read), SUM(cache_write)"
+        " FROM token_usage WHERE agent_id=?",
+        (agent_id,),
+    ).fetchone()
+    return {
+        "input_tok":   row[0] or 0,
+        "output_tok":  row[1] or 0,
+        "cache_read":  row[2] or 0,
+        "cache_write": row[3] or 0,
+    }
